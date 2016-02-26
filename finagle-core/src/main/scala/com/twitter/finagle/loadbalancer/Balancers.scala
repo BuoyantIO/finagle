@@ -115,6 +115,7 @@ object Balancers {
    *  1. The concurrent load, measured over a window specified by
    *     `smoothWin`, to each service stays within the load band, delimited
    *     by `lowLoad` and `highLoad`.
+   *
    *  2. Services receive load proportional to the ratio of their
    *     weights.
    *

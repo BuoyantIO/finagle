@@ -17,7 +17,7 @@ import scala.annotation.tailrec
  * example, we can specify and mix in a load metric (via a Node) and
  * a balancer (a Distributor) separately.
  */
-private trait Balancer[Req, Rep] extends ServiceFactory[Req, Rep] { self =>
+private[loadbalancer] trait Balancer[Req, Rep] extends ServiceFactory[Req, Rep] { self =>
   /**
    * The maximum number of balancing tries (yielding unavailable
    * factories) until we give up.
@@ -41,7 +41,7 @@ private trait Balancer[Req, Rep] extends ServiceFactory[Req, Rep] { self =>
    * like P2C will use these to decide where to balance
    * the next connection request.
    */
-  protected trait NodeT extends ServiceFactory[Req, Rep] {
+  protected[loadbalancer] trait NodeT extends ServiceFactory[Req, Rep] {
     type This
 
     /**
@@ -91,7 +91,7 @@ private trait Balancer[Req, Rep] extends ServiceFactory[Req, Rep] { self =>
    * updated nondestructively, but, as with nodes, may share some
    * data across updates.
   */
-  protected trait DistributorT {
+  protected[loadbalancer] trait DistributorT {
     type This
 
     /**
@@ -274,7 +274,7 @@ private trait Balancer[Req, Rep] extends ServiceFactory[Req, Rep] { self =>
 /**
  * A Balancer mix-in to provide automatic updating via Activities.
  */
-private trait Updating[Req, Rep] extends Balancer[Req, Rep] with OnReady {
+private[loadbalancer] trait Updating[Req, Rep] extends Balancer[Req, Rep] with OnReady {
   private[this] val ready = new Promise[Unit]
   def onReady: Future[Unit] = ready
 
