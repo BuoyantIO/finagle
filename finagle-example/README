@@ -10,3 +10,6 @@ If the example requires a command line parameter, do this:
 
 If you are running a server and a client, start the server in one terminal, then start the client in another.
 
+# Tests
+
+% sbt "project finagle-example" test
