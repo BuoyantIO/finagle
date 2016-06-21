@@ -63,17 +63,21 @@ class WatermarkPool[Req, Rep](
     extends ServiceProxy[Req, Rep](underlying)
   {
     override def close(deadline: Time) = {
+      val underlyingStatus = status
       val releasable = thePool.synchronized {
         if (!isOpen) {
           numServices -= 1
           true
-        } else if (status == Status.Closed) {
+        } else if (underlyingStatus == Status.Closed) {
           numServices -= 1
           // If we just disposed of an service, and this bumped us beneath
           // the high watermark, then we are free to satisfy the first
           // waiter.
           flushWaiters()
           true
+        } else if (underlyingStatus == Status.Busy) {
+          queue.addLast(this)
+          false
         } else if (!waiters.isEmpty) {
           val waiter = waiters.removeFirst()
           waiter() = Return(this)

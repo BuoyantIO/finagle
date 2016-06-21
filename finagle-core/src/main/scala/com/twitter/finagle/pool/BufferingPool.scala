@@ -41,15 +41,27 @@ class BufferingPool[Req, Rep](underlying: ServiceFactory[Req, Rep], size: Int)
   private[this] val buffer = new ConcurrentRingBuffer[Wrapped](size)
 
   @tailrec
-  private[this] def get(): Future[Service[Req, Rep]] =
+  private[this] def get(busy: Seq[Wrapped] = Nil): Future[Service[Req, Rep]] =
     buffer.tryGet() match {
       case None =>
+        busy.foreach { service =>
+          if (!buffer.tryPut(service))
+            service.releaseSelf()
+        }
         underlying() map(new Wrapped(_))
-      case Some(service) if service.status != Status.Closed =>
-        Future.value(service)
       case Some(service) =>
-        service.releaseSelf()
-        get()
+        service.status match {
+          case Status.Open => Future.value(service)
+          case Status.Busy=>
+            if (buffer.tryPut(service)) get()
+            else {
+              service.releaseSelf()
+              get()
+            }
+          case Status.Closed =>
+            service.releaseSelf()
+            get()
+        }
     }
 
   private[this] def drain() {

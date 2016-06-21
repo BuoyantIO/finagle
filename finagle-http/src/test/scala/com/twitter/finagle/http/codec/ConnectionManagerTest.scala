@@ -1,5 +1,6 @@
 package com.twitter.finagle.http.codec
 
+import com.twitter.finagle.{Status => CoreStatus}
 import com.twitter.finagle.http._
 import com.twitter.finagle.http.exp.IdentityStreamTransport
 import com.twitter.finagle.stats.NullStatsReceiver
@@ -9,11 +10,12 @@ import org.junit.runner.RunWith
 import org.mockito.Matchers._
 import org.mockito.Mockito._
 import org.scalatest.FunSuite
+import org.scalatest.concurrent.Eventually
 import org.scalatest.junit.JUnitRunner
 import org.scalatest.mock.MockitoSugar
 
 @RunWith(classOf[JUnitRunner])
-class ConnectionManagerTest extends FunSuite with MockitoSugar {
+class ConnectionManagerTest extends FunSuite with MockitoSugar with Eventually {
   // > further tests
   //   - malformed requests/responses
   //   - methods other than GET
@@ -38,25 +40,24 @@ class ConnectionManagerTest extends FunSuite with MockitoSugar {
   test("not terminate when response is standard") {
     val manager = new ConnectionManager()
     manager.observeRequest(makeRequest(Version.Http11), Future.Done)
-    assert(!manager.shouldClose())
+    assert(manager.status == CoreStatus.Busy)
     manager.observeResponse(makeResponse(Version.Http11, Fields.ContentLength -> "1"), Future.Done)
-    assert(!manager.shouldClose())
+    assert(manager.status == CoreStatus.Open)
   }
 
   test("terminate when response doesn't have content length") {
     val manager = new ConnectionManager()
     manager.observeRequest(makeRequest(Version.Http11), Future.Done)
-    assert(!manager.shouldClose())
+    assert(manager.status == CoreStatus.Busy)
     manager.observeResponse(makeResponse(Version.Http11), Future.Done)
-    assert(manager.shouldClose())
+    assert(manager.status == CoreStatus.Closed)
   }
 
   test("terminate when request has Connection: close") {
     val manager = new ConnectionManager()
-    manager.observeRequest(makeRequest(Version.Http11, "Connection" -> "close"), Future.Done)
-    assert(!manager.shouldClose())
+    assert(manager.status == CoreStatus.Busy)
     manager.observeResponse(makeResponse(Version.Http11, Fields.ContentLength -> "1"), Future.Done)
-    assert(manager.shouldClose())
+    assert(manager.status == CoreStatus.Closed)
   }
 
   test("terminate after response, even if request hasn't finished streaming") {
@@ -65,24 +66,24 @@ class ConnectionManagerTest extends FunSuite with MockitoSugar {
     val req = makeRequest(Version.Http11)
     req.setChunked(true)
     manager.observeRequest(req, p)
-    assert(!manager.shouldClose())
+    assert(manager.status == CoreStatus.Busy)
     manager.observeResponse(
       makeResponse(Version.Http11, Fields.ContentLength -> "1", "Connection" -> "close"),
       Future.Done)
-    assert(manager.shouldClose())
+    eventually { assert(manager.status == CoreStatus.Closed) }
   }
 
   test("terminate after response has finished streaming") {
     val manager = new ConnectionManager()
     manager.observeRequest(makeRequest(Version.Http11), Future.Done)
-    assert(!manager.shouldClose())
+    assert(manager.status == CoreStatus.Busy)
     val p = Promise[Unit]
     val rep = makeResponse(Version.Http11, "Connection" -> "close")
     rep.setChunked(true)
     manager.observeResponse(rep, p)
-    assert(!manager.shouldClose())
+    assert(manager.status == CoreStatus.Busy)
     p.setDone()
-    assert(manager.shouldClose())
+    assert(manager.status == CoreStatus.Closed)
   }
 
   // these tests are sophisticated, and use things that ConnectionManager

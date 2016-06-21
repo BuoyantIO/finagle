@@ -22,7 +22,7 @@ private[finagle] class CachingPool[Req, Rep](
   timer: Timer,
   statsReceiver: StatsReceiver = NullStatsReceiver)
   extends ServiceFactory[Req, Rep]
-{
+{ pool =>
   private[this] val cache =
     new Cache[Service[Req, Rep]](cacheSize, ttl, timer, Some(_.close()))
   @volatile private[this] var isOpen = true
@@ -33,21 +33,44 @@ private[finagle] class CachingPool[Req, Rep](
     extends ServiceProxy[Req, Rep](underlying)
   {
     override def close(deadline: Time) =
-      if (this.status != Status.Closed && CachingPool.this.isOpen) {
-        cache.put(underlying)
-        Future.Done
-      } else
-        underlying.close(deadline)
+      (pool.isOpen, status) match {
+        case (false, _) | (_, Status.Closed) =>
+          underlying.close(deadline)
+        case _ =>
+          cache.put(underlying)
+          Future.Done
+      }
   }
 
+  /**
+   * Attempt to select a cached service.
+   *
+   * As services are retrieved, if a service is marked in the
+   * [[Status.Closed]] state, it is closed and removed from the
+   * cache. [[Status.Busy]] services are accumulated and returned to
+   * the cache once an [[Status.Open]] service is obtained or  no
+   */
   @tailrec
-  private[this] def get(): Option[Service[Req, Rep]] = {
+  private[this] def get(busy: Seq[Service[Req, Rep]] = Nil): Option[Service[Req, Rep]] =
     cache.get() match {
-      case s@Some(service) if service.status != Status.Closed => s
-      case Some(service) /* unavailable */ => service.close(); get()
-      case None => None
+      case s@Some(service) =>
+        service.status match {
+          case Status.Open =>
+            busy.foreach(cache.put(_))
+            s
+
+          case Status.Busy =>
+            get(service +: busy)
+
+          case Status.Closed =>
+            service.close()
+            get(busy)
+        }
+
+      case None =>
+        busy.foreach(cache.put(_))
+        None
     }
-  }
 
   def apply(conn: ClientConnection): Future[Service[Req, Rep]] = synchronized {
     if (!isOpen) Future.exception(new ServiceClosedException) else {
