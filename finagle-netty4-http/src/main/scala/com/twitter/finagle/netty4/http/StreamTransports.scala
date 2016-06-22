@@ -8,10 +8,10 @@ import com.twitter.finagle.transport.Transport
 import com.twitter.io.{Writer, Buf, Reader}
 import com.twitter.util._
 import io.netty.handler.codec.{http => NettyHttp, TooLongFrameException}
-
+import com.twitter.logging.Logger
 
 private[http] object StreamTransports {
-
+  val log = Logger.get()
   /**
    * Drain [[Transport]] messages into a [[Writer]] until `eos` indicates end
    * of stream. Reads from the transport are interleaved with writes to the
@@ -116,8 +116,10 @@ private[finagle] class Netty4ServerStreamTransport(
   }
 
   def read(): Future[Multi[Request]] = {
+    log.fatal("reading")
     transport.read().flatMap {
       case req: NettyHttp.HttpRequest if req.decoderResult.isFailure =>
+        log.fatal("failing")
         val exn = req.decoderResult.cause
         val bad = exn match {
           case ex: TooLongFrameException =>
@@ -126,23 +128,32 @@ private[finagle] class Netty4ServerStreamTransport(
             else
               BadRequest.headerTooLong(exn)
           case _ =>
+            log.fatal("failing with exception: %s", exn)
             BadRequest(exn)
         }
         Future.value(Multi(bad, Future.Done))
 
       case req: NettyHttp.FullHttpRequest =>
+      log.fatal("fullhttprequest")
         val finagleReq = Bijections.netty.fullRequestToFinagle(req)
-        Future.value(Multi(finagleReq, Future.Done))
+        val rv = Future.value(Multi(finagleReq, Future.Done))
+        Thread.dumpStack()
+        log.fatal(s"NettyHttp.FullHttpRequest: $rv")
+        rv
 
       case req: NettyHttp.HttpRequest =>
+        log.fatal("httprequest")
         assert(!req.isInstanceOf[NettyHttp.HttpContent]) // chunks are handled via collation
         assert(NettyHttp.HttpUtil.isTransferEncodingChunked(req))
 
         val coll = collate(transport, readChunk)(isLast)
         val finagleReq = Bijections.netty.chunkedRequestToFinagle(req, coll)
-        Future.value(Multi(finagleReq, coll))
+        val rv = Future.value(Multi(finagleReq, coll))
+        log.fatal(s"rv: $rv")
+        rv
 
       case invalid =>
+        log.fatal("invalid")
         // relies on GenSerialClientDispatcher satisfying `p`
         Future.exception(new IllegalArgumentException(s"invalid message '$invalid'"))
     }
@@ -166,6 +177,7 @@ private[finagle] class Netty4ClientStreamTransport(
   }
 
   def read(): Future[Multi[Response]] = {
+    log.fatal(s"client.read()")
     rawTransport.read().flatMap {
       // fully buffered message
       case rep: NettyHttp.FullHttpResponse =>

@@ -1,13 +1,14 @@
 package com.twitter.finagle.netty4.http
 
 import com.twitter.finagle.http.HeaderMap
-import com.twitter.finagle.netty4.{ByteBufAsBuf, BufAsByteBuf}
+import com.twitter.finagle.netty4.{BufAsByteBuf, ByteBufAsBuf}
 import com.twitter.finagle.{http => FinagleHttp}
 import com.twitter.io.{BufReader, Reader}
+import com.twitter.logging.Logger
 import io.netty.handler.codec.{http => NettyHttp}
 
 private[finagle] object Bijections {
-
+  val log = Logger.get()
   object netty {
     def headersToFinagle(headers: NettyHttp.HttpHeaders): FinagleHttp.HeaderMap =
       new Netty4HeaderMap(headers)
@@ -44,7 +45,7 @@ private[finagle] object Bijections {
       nettyMsg match {
         case hasContent: NettyHttp.HttpContent =>
           finMsg.content = ByteBufAsBuf.Owned(hasContent.content)
-        case _ =>
+        case _ => log.fatal(s"no content in copyHeadersAndBody")
       }
     }
 
@@ -56,6 +57,7 @@ private[finagle] object Bijections {
         reader = BufReader(ByteBufAsBuf.Owned(r.content))
       )
       result.setChunked(false)
+      log.fatal(s"result: $result")
       copyHeadersAndBody(r, result)
       result
     }
@@ -66,6 +68,7 @@ private[finagle] object Bijections {
         val entry = itr.next()
         out.add(entry.getKey, entry.getValue)
       }
+      log.fatal(s"wrote netty headers to finagle $head")
     }
 
     def chunkedResponseToFinagle(in: NettyHttp.HttpResponse, r: Reader): FinagleHttp.Response = {

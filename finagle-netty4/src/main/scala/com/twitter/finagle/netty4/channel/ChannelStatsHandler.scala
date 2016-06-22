@@ -87,7 +87,7 @@ private[netty4] class ChannelStatsHandler(statsReceiver: StatsReceiver)
         channelReadCount.getAndAdd(readableBytes)
         receivedBytes.incr(readableBytes)
       case _ =>
-        log.warning("ChannelStatsHandler received non-channelbuffer read")
+        log.warning(s"ChannelStatsHandler received non-channelbuffer read, $msg in $ctx")
     }
 
     super.channelRead(ctx, msg)

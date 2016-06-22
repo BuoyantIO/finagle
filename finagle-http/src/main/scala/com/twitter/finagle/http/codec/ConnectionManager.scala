@@ -1,6 +1,7 @@
 package com.twitter.finagle.http.codec
 
 import com.twitter.finagle.http.{Message, Request, Response}
+import com.twitter.logging.Logger
 import com.twitter.util.Future
 
 /**
@@ -12,6 +13,7 @@ private[finagle] class ConnectionManager {
   private[this] var isKeepAlive = false
   private[this] var isIdle = true
   private[this] var activeStreams = 0
+  val log = Logger.get()
 
   def observeMessage(message: Message, onFinish: Future[Unit]): Unit = synchronized {
     message match {
@@ -22,12 +24,14 @@ private[finagle] class ConnectionManager {
   }
 
   def observeRequest(request: Request, onFinish: Future[Unit]): Unit = synchronized {
+    log.fatal(s"request: $request onFinish: ${onFinish.isDefined}")
     isIdle = false
     isKeepAlive = request.isKeepAlive
     handleIfStream(onFinish)
   }
 
   def observeResponse(response: Response, onFinish: Future[Unit]): Unit = synchronized {
+    log.fatal(s"response: $response onFinish: ${onFinish.isDefined}")
     if ((!response.isChunked && response.contentLength.isEmpty) || !response.isKeepAlive) isKeepAlive = false
 
     // If a response isn't chunked, then we're done with this request,
@@ -38,6 +42,7 @@ private[finagle] class ConnectionManager {
 
   // this can be unsynchronized because all callers are synchronized.
   private[this] def handleIfStream(onFinish: Future[Unit]): Unit = {
+    log.fatal(s"ConnectionManager/onFinish.isDefined: ${onFinish.isDefined}")
     if (!onFinish.isDefined) {
       activeStreams += 1
       onFinish.ensure {
@@ -47,6 +52,7 @@ private[finagle] class ConnectionManager {
   }
 
   private[this] def endStream(): Unit = synchronized {
+    log.fatal(s"endStream()")
     activeStreams -= 1
     isIdle = activeStreams == 0
   }

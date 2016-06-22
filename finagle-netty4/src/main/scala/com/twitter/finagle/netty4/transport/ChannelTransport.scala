@@ -4,13 +4,13 @@ import com.twitter.concurrent.AsyncQueue
 import com.twitter.finagle._
 import com.twitter.finagle.transport.Transport
 import com.twitter.util._
-import io.netty.channel.{
-  Channel, ChannelHandlerContext, ChannelFutureListener, ChannelFuture, SimpleChannelInboundHandler
-}
+import io.netty.channel.{Channel, ChannelFuture, ChannelFutureListener, ChannelHandlerContext, SimpleChannelInboundHandler}
 import io.netty.handler.ssl.SslHandler
 import java.net.SocketAddress
 import java.security.cert.Certificate
-import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+
+import com.twitter.logging.Logger
 
 /**
  * A [[Transport]] implementation based on Netty's [[Channel]].
@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
  * handlers inserted after that won't get any of the inbound traffic.
  */
 private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[In, Out] {
-
+  val log = Logger.get()
   private[this] val queue = new AsyncQueue[Out]
 
   private[this] val failed = new AtomicBoolean(false)
@@ -137,23 +137,27 @@ private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[I
 
   override def toString = s"Transport<channel=$ch, onClose=$closed>"
 
-  ch.pipeline().addLast("finagleChannelTransport", new SimpleChannelInboundHandler[Out](false /* autoRelease */) {
+  ch.pipeline().addLast("finagleChannelTransport", new SimpleChannelInboundHandler[Out](true /* autoRelease */) {
 
     override def channelReadComplete(ctx: ChannelHandlerContext): Unit = {
+      log.fatal(s"channelReadComplete: $ctx")
       if (!ch.config.isAutoRead && msgsNeeded.get > 0) ch.read()
       super.channelReadComplete(ctx)
     }
 
     override def channelRead0(ctx: ChannelHandlerContext, msg: Out): Unit = {
+      log.fatal(s"channelRead0: $ctx with $msg")
       if (!ch.config.isAutoRead) msgsNeeded.decrementAndGet()
       queue.offer(msg)
     }
 
     override def channelInactive(ctx: ChannelHandlerContext): Unit = {
+      log.fatal(s"channelInactive: $ctx")
       fail(new ChannelClosedException(remoteAddress))
     }
 
     override def exceptionCaught(ctx: ChannelHandlerContext, e: Throwable): Unit = {
+      log.fatal(s"exceptionCaught: $ctx with $e")
       fail(ChannelException(e, remoteAddress))
     }
   })

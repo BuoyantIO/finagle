@@ -213,7 +213,7 @@ abstract class AbstractEndToEndTest extends FunSuite with BeforeAndAfter {
           val names = res.headerMap.keys
           Future.value(names.exists(_.contains("Bar")))
       }
-      assert(!Await.result(hasBar, 5.seconds))
+      assert(!Await.result(hasBar, 10.seconds))
       client.close()
     }
 

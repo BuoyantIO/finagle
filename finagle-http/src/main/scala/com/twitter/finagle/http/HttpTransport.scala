@@ -2,8 +2,10 @@ package com.twitter.finagle.http
 
 import com.twitter.finagle.{Status => CoreStatus}
 import com.twitter.finagle.http.codec.ConnectionManager
-import com.twitter.finagle.http.exp.{Multi, StreamTransportProxy, StreamTransport}
+import com.twitter.finagle.http.exp.{Multi, StreamTransport, StreamTransportProxy}
+import com.twitter.logging.Logger
 import com.twitter.util.{Future, Promise}
+
 import scala.util.control.NonFatal
 
 /**
@@ -16,6 +18,7 @@ private[finagle] class HttpTransport[A <: Message, B <: Message](
     self: StreamTransport[A, B],
     manager: ConnectionManager)
   extends StreamTransportProxy[A, B](self) {
+  val log = Logger.get()
 
   private[this] val readFn: Multi[B] => Unit = { case Multi(m, onFinish) =>
     manager.observeMessage(m, onFinish)

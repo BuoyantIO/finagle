@@ -39,18 +39,22 @@ private[finagle] class HttpClientDispatcher(
 
     // wait on these concurrently:
     Future.join(Seq(
-      trans.write(req),
+      trans.write(req).onSuccess{ _ => log.fatal(s"trans.write($req)") },
       // Drain the Transport into Response body.
-      trans.read().flatMap {
-        case Multi(res, _) if HttpNackFilter.isNack(res)=>
-          p.updateIfEmpty(Throw(NackFailure))
-          Future.Done
+      { log.fatal(s"trans.read($req)")
+        trans.read().flatMap {
+          case Multi(res, _) if HttpNackFilter.isNack(res)=>
+            p.updateIfEmpty(Throw(NackFailure))
+            Future.Done
 
-        case Multi(res, readFinished) =>
-          p.updateIfEmpty(Return(res))
-          readFinished
+          case Multi(res, readFinished) =>
+            log.fatal(s"trans.read($req): $res")
+            p.updateIfEmpty(Return(res))
+            readFinished.onSuccess { _ => log.fatal(s"dispatch/readFinished")}
+        }
       } // we don't need to satisfy p when we fail because GenSerialClientDispatcher does already
-    )).onFailure { _ =>
+    )).onFailure { e =>
+      log.fatal(s"dispatch/onFailure error: $e")
       // This Future represents the totality of the exchange;
       // thus failure represents *any* failure that can happen
       // during the exchange.
