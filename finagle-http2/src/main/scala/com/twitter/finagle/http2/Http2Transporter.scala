@@ -103,45 +103,45 @@ private[http2] object Http2Transporter {
       params + Netty4Transporter.Backpressure(false)
     )
 
-    private[this] val connectionCache =
+    private[this] val promisedTransporters =
       new ConcurrentHashMap[SocketAddress, Future[MultiplexedTransporter]]
 
     private[this] def unsafeCast(trans: Transport[HttpObject, HttpObject]): Transport[Any, Any] =
       trans.map(_.asInstanceOf[HttpObject], _.asInstanceOf[Any])
 
     @scala.annotation.tailrec
-    def apply(addr: SocketAddress): Future[Transport[Any, Any]] = {
-      log.info(s"Http2Transporter.Transporter: addr=$addr")
-      Option(connectionCache.get(addr)) match {
+    def apply(addr: SocketAddress): Future[Transport[Any, Any]] =
+      Option(promisedTransporters.get(addr)) match {
         case Some(f) =>
           log.info(s"Http2Transporter.Transporter: addr=$addr found")
           f.flatMap { multiplexed =>
+            log.info(s"Http2Transporter.Transporter: multiplex($addr)")
             multiplexed(addr).map(unsafeCast _)
           }
 
         case None =>
-          val p = Promise[MultiplexedTransporter]()
-          if (connectionCache.putIfAbsent(addr, p) == null) {
+          val p = Promise[MultiplexedTransporter]
+          if (promisedTransporters.putIfAbsent(addr, p) == null) {
             log.info(s"Http2Transporter.Transporter: addr=$addr acquiring")
             val f = underlying(addr).map(newTransport).map { trans =>
               new MultiplexedTransporter(
                 Transport.cast[HttpObject, HttpObject](trans),
                 Closable.make { time: Time =>
-                  log.info(s"Http2Transporter.Transporter: multiplex: remove($addr, $multiplexed)")
-                  connectionCache.remove(addr, p)
+                  log.info(s"Http2Transporter.Transporter: multiplex: remove($addr)")
+                  promisedTransporters.remove(addr, p)
                   Future.Done
                 }
               )
             }
             p.become(f)
             f.flatMap { multiplexed =>
+              log.info(s"Http2Transporter.Transporter: multiplex($addr)")
               multiplexed(addr).map(unsafeCast _)
             }
           } else {
             apply(addr) // lost the race, try again
           }
       }
-    }
   }
 
   // borrows heavily from the netty http2 example
@@ -154,6 +154,7 @@ private[http2] object Http2Transporter {
       // removes self from pipeline
       // drops message
       // Done with this handler, remove it from the pipeline.
+      log.info(s"Http2Transporter.Upgrader: read($ctx, $msg)")
       msg match {
         case settings: Http2Settings => // drop!
           ctx.pipeline.remove(this)
@@ -170,7 +171,9 @@ private[http2] object Http2Transporter {
      * request.  We buffer the rest of the writes until we upgrade successfully.
      */
     override def write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise): Unit = {
-      if (first.compareAndSet(true, false)) ctx.writeAndFlush(msg, promise)
+      val isFirst = first.compareAndSet(true, false)
+      log.info(s"Http2Transporter.Upgrader: write($ctx, $msg) first=$isFirst")
+      if (isFirst) ctx.writeAndFlush(msg, promise)
       else super.write(ctx, msg, promise) // this buffers the write until the handler is removed
     }
   }

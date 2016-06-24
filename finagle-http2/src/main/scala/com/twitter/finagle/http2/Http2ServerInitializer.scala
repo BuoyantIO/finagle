@@ -8,7 +8,13 @@ import io.netty.channel.socket.SocketChannel
 import io.netty.channel.{Channel, ChannelInitializer}
 import io.netty.handler.codec.http.HttpServerUpgradeHandler.{UpgradeCodec, UpgradeCodecFactory}
 import io.netty.handler.codec.http.{HttpServerCodec, HttpServerUpgradeHandler}
-import io.netty.handler.codec.http2.{Http2CodecUtil, Http2MultiplexCodec, Http2ServerUpgradeCodec}
+import io.netty.handler.codec.http2.{
+  Http2CodecUtil,
+  Http2FrameLogger,
+  Http2MultiplexCodec,
+  Http2ServerUpgradeCodec
+}
+import io.netty.handler.logging.LogLevel
 import io.netty.util.AsciiString
 
 /**
@@ -20,43 +26,51 @@ private[http2] class Http2ServerInitializer(
   extends ChannelInitializer[SocketChannel] {
 
   private[this] val log = Logger.get()
-
-  private[this] object InnerInitializer extends ChannelInitializer[Channel] {
-    def initChannel(ch: Channel): Unit = {
-      log.info(s"Http2ServerInitializer/InnerInitializer.initChannel($ch)")
-      initServer(params)(ch.pipeline)
-    }
-  }
-
-  private[this] object Initializer extends ChannelInitializer[Channel] {
-    def initChannel(ch: Channel): Unit = {
-      log.info(s"Http2ServerInitializer/Initializer.initChannel($ch)")
-      ch.pipeline.addLast(init)
-      ch.pipeline.addLast(InnerInitializer)
-    }
-  }
-
-  private[this] object CodecUpgrade extends UpgradeCodecFactory {
-    override def newUpgradeCodec(protocol: CharSequence): UpgradeCodec = {
-      log.info(s"Http2ServerInitializer/CodecUpgrade: protocol=${AsciiString.of(protocol)}")
-      if (AsciiString.contentEquals(Http2CodecUtil.HTTP_UPGRADE_PROTOCOL_NAME, protocol)) {
-        val rv = new Http2ServerUpgradeCodec(new Http2MultiplexCodec(true, Initializer))
-        log.info(s"Http2ServerInitializer/CodecUpgrade: codec installed: $rv")
-        rv
-      } else {
-        log.info("Http2ServerInitializer/CodecUpgrade: codec not installed")
-        null
-      }
-    }
-  }
+  private[this] val prefix = "Http2ServerInitializer"
 
   def initChannel(ch: SocketChannel): Unit = {
-    val p = ch.pipeline()
-    val sourceCodec = new HttpServerCodec()
-    val maxRequestSize = params[httpparam.MaxRequestSize].size
+    // ch.pipeline.addLast(new Http2FrameLogger(LogLevel.INFO))
 
-    log.info(s"Http2ServerInitializer.initChannel(${ch})")
-    p.addLast(sourceCodec)
-    p.addLast(new HttpServerUpgradeHandler(sourceCodec, CodecUpgrade, maxRequestSize.inBytes.toInt))
+    // val sourceCodec = new HttpServerCodec
+    // ch.pipeline.addLast(sourceCodec)
+
+    // val maxRequestSize = params[httpparam.MaxRequestSize].size.inBytes.toInt
+    // val upgrader = new HttpServerUpgradeHandler(sourceCodec, CodecUpgrade, maxRequestSize)
+    // ch.pipeline.addLast(upgrader)
+
+    ch.pipeline.addLast(new Http2MultiplexCodec(true, channelInitializer))
+    log.info(s"$prefix.initChannel(${ch}): ${ch.pipeline}")
+  }
+
+  // private[this] object CodecUpgrade extends UpgradeCodecFactory {
+  //   private[this] val prefix = s"${Http2ServerInitializer.this.prefix}.CodecUpgrade"
+
+  //   override def newUpgradeCodec(protocol: CharSequence): UpgradeCodec = {
+  //     log.info(s"$prefix.newUpgradeProtocol(${AsciiString.of(protocol)})")
+  //     if (AsciiString.contentEquals(Http2CodecUtil.HTTP_UPGRADE_PROTOCOL_NAME, protocol)) {
+  //       val rv = new Http2ServerUpgradeCodec(new Http2MultiplexCodec(true, initializer))
+  //       log.info(s"$prefix: codec installed: $rv")
+  //       rv
+  //     } else {
+  //       log.info("$prefix: codec not installed")
+  //       null
+  //     }
+  //   }
+  // }
+
+
+  val channelInitializer = new ChannelInitializer[Channel] {
+    def initChannel(ch: Channel): Unit = {
+      ch.pipeline.addLast(init)
+      ch.pipeline.addLast(streamInitalizer)
+      log.info(s"$prefix.channelInitializer($ch)")
+    }
+  }
+
+  val streamInitalizer = new ChannelInitializer[Channel] {
+    def initChannel(ch: Channel): Unit = {
+      initServer(params)(ch.pipeline)
+      log.info(s"$prefix.streamInitializer($ch)")
+    }
   }
 }
