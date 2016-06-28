@@ -52,6 +52,7 @@ private[http2] class MultiplexedTransporter(
       def write(obj: HttpObject): Future[Unit] = obj match {
         case request: FullHttpRequest => self.synchronized {
           Http2Transporter.setStreamId(request, curId)
+          log.fatal(s"MultiplexedTransporter($addr).write($curId, ${request.method} ${request.uri})")
 
           tryToInitializeQueue(curId)
           if (obj.isInstanceOf[LastHttpContent]) {
@@ -97,6 +98,7 @@ private[http2] class MultiplexedTransporter(
       def read(): Future[HttpObject] = self.synchronized {
         underlying.read().onSuccess {
           case response: FullHttpResponse =>
+            log.fatal(s"MultiplexedTransporter.read() => $response")
             val streamId = Http2Transporter.getStreamId(response).get
             tryToInitializeQueue(streamId)
             queues.get(streamId).offer(response)

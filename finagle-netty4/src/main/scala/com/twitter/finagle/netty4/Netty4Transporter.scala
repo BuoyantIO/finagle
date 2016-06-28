@@ -35,6 +35,8 @@ private[finagle] object Netty4Transporter {
   private[this] val CancelledConnectionEstablishment =
     Failure.rejected("connection establishment was cancelled")
 
+  private[this] val log = com.twitter.logging.Logger.get(getClass.getName)
+
   private[this] def build[In, Out](
     init: ChannelInitializer[Channel],
     params: Stack.Params
@@ -80,7 +82,11 @@ private[finagle] object Netty4Transporter {
             case e: UnresolvedAddressException => e
             case NonFatal(e) => Failure.rejected(e)
           })
-          else transportP.setValue(new ChannelTransport[In, Out](channelF.channel()))
+          else {
+            val ch = channelF.channel
+            log.info(s"connected $ch ${ch.pipeline}")
+            transportP.setValue(new ChannelTransport[In, Out](ch))
+          }
         }
       })
 

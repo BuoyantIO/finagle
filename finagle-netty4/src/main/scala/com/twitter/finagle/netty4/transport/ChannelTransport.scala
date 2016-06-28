@@ -61,6 +61,7 @@ private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[I
   }
 
   def write(msg: In): Future[Unit] = {
+    log.info(s"ChannelTransport[$ch].write($msg)")
     // We support Netty's channel-level backpressure thereby respecting
     // slow receivers on the other side.
     if (!ch.isWritable) {
@@ -87,6 +88,7 @@ private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[I
   }
 
   def read(): Future[Out] = {
+    log.info(s"ChannelTransport[$ch].read()")
     if (!ch.config.isAutoRead) {
       msgsNeeded.incrementAndGet()
       ch.read()
@@ -102,6 +104,7 @@ private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[I
     // listeners of two promises, which continue to share state via Linked and
     // is a gain in space-efficiency.
     p.become(queue.poll())
+    p.onSuccess(out => log.info(s"ChannelTransport[$ch].read(): $out"))
 
 
     // Note: We don't raise on queue.poll's future, because it doesn't set an
@@ -140,24 +143,24 @@ private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[I
   ch.pipeline().addLast("finagleChannelTransport", new SimpleChannelInboundHandler[Out](true /* autoRelease */) {
 
     override def channelReadComplete(ctx: ChannelHandlerContext): Unit = {
-      log.fatal(s"channelReadComplete: $ctx")
+      log.fatal(s"${ctx.name}.channelReadComplete: $ctx")
       if (!ch.config.isAutoRead && msgsNeeded.get > 0) ch.read()
       super.channelReadComplete(ctx)
     }
 
     override def channelRead0(ctx: ChannelHandlerContext, msg: Out): Unit = {
-      log.fatal(s"channelRead0: $ctx with $msg")
+      log.fatal(s"${ctx.name}.channelRead0: $ctx with $msg")
       if (!ch.config.isAutoRead) msgsNeeded.decrementAndGet()
       queue.offer(msg)
     }
 
     override def channelInactive(ctx: ChannelHandlerContext): Unit = {
-      log.fatal(s"channelInactive: $ctx")
+      log.fatal(s"${ctx.name}.channelInactive: $ctx")
       fail(new ChannelClosedException(remoteAddress))
     }
 
     override def exceptionCaught(ctx: ChannelHandlerContext, e: Throwable): Unit = {
-      log.fatal(s"exceptionCaught: $ctx with $e")
+      log.fatal(s"${ctx.name}.exceptionCaught: $ctx $e")
       fail(ChannelException(e, remoteAddress))
     }
   })
