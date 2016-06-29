@@ -5,12 +5,10 @@ import com.twitter.finagle.Stack
 import com.twitter.finagle.client.Transporter
 import com.twitter.finagle.netty4.Netty4Transporter
 import com.twitter.finagle.netty4.channel.BufferingChannelOutboundHandler
-//import com.twitter.finagle.netty4.http.exp.initClient
+import com.twitter.finagle.netty4.http.exp.initClient
 import com.twitter.finagle.transport.{TransportProxy, Transport}
-import com.twitter.logging.Logger
 import com.twitter.util.{Future, Promise, Closable, Time}
-import io.netty.channel.{ChannelHandler, ChannelPipeline, ChannelDuplexHandler,
-  ChannelHandlerContext, ChannelPromise, SimpleChannelInboundHandler}
+import io.netty.channel._
 import io.netty.handler.codec.http.{HttpResponse => Netty4Response, _}
 import io.netty.handler.codec.http2.HttpConversionUtil.ExtensionHeaderNames.STREAM_ID
 import io.netty.handler.codec.http2._
@@ -21,72 +19,97 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private[http2] object Http2Transporter {
 
-  private[this] val log = Logger.get()
-
   def getStreamId(msg: HttpMessage): Option[Int] = {
-    val id = msg.headers.getInt(STREAM_ID.text)
-    if (id == null) None else Some(id)
+    val num = msg.headers.getInt(STREAM_ID.text())
+
+    // java / scala primitive compatibility stuff
+    if (num == null) None
+    else Some(num)
   }
 
   def setStreamId(msg: HttpMessage, id: Int): Unit =
-    msg.headers.setInt(STREAM_ID.text, id)
+    msg.headers.setInt(STREAM_ID.text(), id)
 
-  /**
-   * Constructs a pipeline that that is Http2Frame at the top and
-   * HttpObject at the bottom.
-   */
-  private[http2] def h2cToHttpPipeliner(params: Stack.Params): ChannelPipeline => Unit = {
+  // XXX This doesn't really work yet.
+  private[http2] def init(params: Stack.Params): ChannelPipeline => Unit = {
     val maxResponseSize = params[httpparam.MaxResponseSize].size.inBytes.toInt
+    val maxChunkSize = params[httpparam.MaxChunkSize].size.inBytes.toInt
+    val maxHeaderSize = params[httpparam.MaxHeaderSize].size.inBytes.toInt
+    val maxInitialLineSize = params[httpparam.MaxInitialLineSize].size.inBytes.toInt
 
-    (pipeline: ChannelPipeline) => {
-      pipeline.addLast("debug.h2", new DebugHandler("client[h2]"))
+    // At the head of this pipeline is an Http2 client to a remote
+    // server. At the tail is an Http1 application. Reads go from
+    // Http2 to Http1 and writes from Http1 to Http2.
+    { pipeline: ChannelPipeline =>
+      pipeline.addLast("h2.debug", new DebugHandler("client[h2]"))
 
-      pipeline.addLast("h1ToH2", {
-        val conn = new DefaultHttp2Connection(false /*server*/)
+      // Prevent writing http2 requests until a SETTINGS message is
+      // received from the server.
+      //pipeline.addLast("bufferH2UntilUpgraded", new UpgradeRequestHandler)
 
-        val inbound = new InboundHttp2ToHttpAdapterBuilder(conn)
+      val h2mux = new Http2MultiplexCodec(false /*server*/, IgnoreServerStreams)
+      pipeline.addLast("h2.mux", h2mux)
+
+      // Translates outbound messages (requests written to the client)
+      // from Http1 to Http2 and inbound messages (responses read from
+      // the client) from Http2 to Http1.
+      val inboundH2OutboundH1 = {
+        val connection = new DefaultHttp2Connection(false /*server*/)
+
+        val inboundH2ToH1 = new InboundHttp2ToHttpAdapterBuilder(connection)
           .maxContentLength(maxResponseSize)
           .propagateSettings(true)
           .build()
 
+        // XXX Generally, requests should be read in the appropriate
+        // content-encoding.  However, in linkerd we shouldn't have to
+        // touch bodies in any way.
+        // val decompressInbound = new DelegatingDecompressorFrameListener(connection, inboundH2ToH1)
+
         new HttpToHttp2ConnectionHandlerBuilder()
-          .connection(conn)
-          // Since we don't expose Http2Frames, no use in trying to
-          // support PROMISE_PUSH.
+          .connection(connection)
           .initialSettings(new Http2Settings().pushEnabled(false))
-          .frameListener(inbound)
-          .frameLogger(new Http2FrameLogger(LogLevel.ERROR, "client"))
+          .frameListener(inboundH2ToH1)
+          .frameLogger(new Http2FrameLogger(LogLevel.INFO))
           .build()
-      })
+      }
 
-      pipeline.addLast("debug.h1", new DebugHandler("client[h1]"))
+      // val h1 = new HttpClientCodec(maxInitialLineSize, maxHeaderSize, maxChunkSize)
+      // val h2Upgrade = new HttpClientUpgradeHandler(h1, new Http2ClientUpgradeCodec(inboundH2OutboundH1), Int.MaxValue)
 
-      log.info(s"Http2Transporter.initClient: pipeline=${pipeline}")
+      pipeline.addLast("h2.debug.upgrade", new DebugHandler("client[h2.upgrade]"))
+      pipeline.addLast("h2upgrade", inboundH2OutboundH1)
+
+      // pipeline.addLast("h1.debug.codec", new DebugHandler("client[h1.codec]"))
+      // pipeline.addLast("h1", h1)
+
+      // Add Http1 client stuff to the pipeline
+      initClient(params)(pipeline)
+      pipeline.addLast("h1.debug", new DebugHandler("client[h1]"))
     }
   }
 
-  private[this] val newTransport: Transport[Any, Any] => Transport[Any, Any] =
-    { transport: Transport[Any, Any] =>
+  def apply(params: Stack.Params): Transporter[Any, Any] = new Transporter[Any, Any] {
+    // current http2 client implementation doesn't support
+    // netty-style backpressure
+    // https://github.com/netty/netty/issues/3667#issue-69640214
+    private[this] val underlying = Netty4Transporter[Any, Any](init(params), params + Netty4Transporter.Backpressure(false))
+
+    private[this] val map = new ConcurrentHashMap[SocketAddress, Future[MultiplexedTransporter]]()
+
+    private[this] def newConnection(addr: SocketAddress): Future[Transport[Any, Any]] = underlying(addr).map { transport =>
       new TransportProxy[Any, Any](transport) {
-        def write(msg: Any): Future[Unit] = {
-          log.info(s"Http2Transporter.newTransport.writing $msg")
+        def write(msg: Any): Future[Unit] =
           transport.write(msg)
-            .onSuccess(_ => log.info(s"Http2Transporter.newTransport.wrote $msg"))
-        }
 
         def read(): Future[Any] = {
-          log.info(s"Http2Transporter.newTransport.reading")
           transport.read().flatMap {
-            case res: Netty4Response =>
-              log.info(s"Http2Transporter.newTransport.read(): response=$res")
-              Future.value(res)
-
+            case req: Netty4Response =>
+              Future.value(req)
             case settings: Http2Settings =>
-              log.info(s"Http2Transporter.newTransport.read(): settings=$settings")
               // drop for now
               // TODO: we should handle settings properly
               read()
-
             case req => Future.exception(new IllegalArgumentException(
               s"expected a Netty4Response, got a ${req.getClass.getName}"))
           }
@@ -94,122 +117,68 @@ private[http2] object Http2Transporter {
       }
     }
 
-  def apply(params: Stack.Params): Transporter[Any, Any] =
-    new Transporter[Any, Any] {
-      // current http2 client implementation doesn't support
-      // netty-style backpressure
-      // https://github.com/netty/netty/issues/3667#issue-69640214
-      private[this] val underlying = Netty4Transporter[Any, Any](
-        h2cToHttpPipeliner(params),
-        params + Netty4Transporter.Backpressure(false)
-      )
+    private[this] def unsafeCast(trans: Transport[HttpObject, HttpObject]): Transport[Any, Any] =
+      trans.map(_.asInstanceOf[HttpObject], _.asInstanceOf[Any])
 
-      private[this] val promisedTransporters =
-        new ConcurrentHashMap[SocketAddress, Future[MultiplexedTransporter]]
-
-      private[this] def unsafeCast(trans: Transport[HttpObject, HttpObject]): Transport[Any, Any] =
-        trans.map(_.asInstanceOf[HttpObject], _.asInstanceOf[Any])
-
-      @scala.annotation.tailrec
-      def apply(addr: SocketAddress): Future[Transport[Any, Any]] =
-        Option(promisedTransporters.get(addr)) match {
-          case Some(f) =>
-            f.flatMap { multiplexed =>
-              log.info(s"Http2Transporter.Transporter: found: addr=$addr")
-              multiplexed(addr).map(unsafeCast _)
-            }
-
-          case None =>
-            val p = Promise[MultiplexedTransporter]
-            if (promisedTransporters.putIfAbsent(addr, p) == null) {
-              log.info(s"Http2Transporter.Transporter: addr=$addr acquiring")
-              val f = underlying(addr).map(newTransport).map { trans =>
-                new MultiplexedTransporter(
-                  Transport.cast[HttpObject, HttpObject](trans),
-                  Closable.make { time: Time =>
-                    log.info(s"Http2Transporter.Transporter: multiplex: remove($addr)")
-                    promisedTransporters.remove(addr, p)
-                    Future.Done
-                  }
-                )
-              }
-              p.become(f)
-              f.flatMap { multiplexed =>
-                log.info(s"Http2Transporter.Transporter: multiplex($addr)")
-                multiplexed(addr).map(unsafeCast _)
-              }
-            } else apply(addr) // lost the race, try again
+    def apply(addr: SocketAddress): Future[Transport[Any, Any]] = Option(map.get(addr)) match {
+      case Some(f) =>
+        f.flatMap { multiplexed =>
+          multiplexed(addr).map(unsafeCast _)
         }
-    }
-
-  @ChannelHandler.Sharable
-  private[this] class IgnoreInboundHandler extends SimpleChannelInboundHandler[Http2Frame] {
-    def channelRead0(ctx: ChannelHandlerContext, frame: Http2Frame): Unit = {
-      log.fatal(s"Http2Transporter.IgnoreInbound.channelRead0 $ctx $frame")
+      case None =>
+        val p = Promise[MultiplexedTransporter]()
+        if (map.putIfAbsent(addr, p) == null) {
+          val f = newConnection(addr).map { trans =>
+            // this has to be lazy because it has a forward reference to itself,
+            // and that's illegal with strict values.
+            lazy val multiplexed: MultiplexedTransporter = new MultiplexedTransporter(
+              Transport.cast[HttpObject, HttpObject](trans),
+              Closable.make { time: Time =>
+                map.remove(addr, multiplexed)
+                Future.Done
+              }
+            )
+            multiplexed
+          }
+          p.become(f)
+          f.flatMap { multiplexed =>
+            multiplexed(addr).map(unsafeCast _)
+          }
+        } else {
+          apply(addr) // lost the race, try again
+        }
     }
   }
 
-  // /** borrows heavily from the netty http2 example */
-  // private[this] class UpgradeRequestHandler
-  //   extends ChannelDuplexHandler
-  //   with BufferingChannelOutboundHandler {
-  //   override def channelRead(ctx: ChannelHandlerContext, msg: Any): Unit = {
-  //     // receives an upgrade response
-  //     // removes self from pipeline
-  //     // drops message
-  //     // Done with this handler, remove it from the pipeline.
-  //     log.info(s"Http2Transporter.Upgrader: read($ctx, $msg)")
-  //     msg match {
-  //       case settings: Http2Settings => // drop!
-  //         log.info(s"Http2Transporter.Upgrader.channelRead($ctx, $settings) remove/ignore")
-  //         ctx.pipeline.remove(this)
-  //       case _ =>
-  //         log.info(s"Http2Transporter.Upgrader.channelRead($ctx, $msg) fire read")
-  //         ctx.fireChannelRead(msg)
-  //     }
-  //   }
-  //
-  //   private[this] val first = new AtomicBoolean(true)
-  //
-  //   /**
-  //    * We write the first message directly and it serves as the upgrade request.
-  //    * The rest of the handlers will mutate it to look like a good upgrade
-  //    * request.  We buffer the rest of the writes until we upgrade successfully.
-  //    */
-  //   override def write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise): Unit = {
-  //     val isFirst = first.compareAndSet(true, false)
-  //     log.info(s"Http2Transporter.Upgrader.write($ctx, $msg) first=$isFirst")
-  //     if (isFirst) ctx.writeAndFlush(msg, promise)
-  //     else super.write(ctx, msg, promise) // this buffers the write until the handler is removed
-  //   }
-  // }
-
-  private[this] class DebugHandler(prefix: String)
-    extends ChannelDuplexHandler {
-
-    override def channelActive(ctx: ChannelHandlerContext): Unit = {
-      log.info(s"$prefix.channelActive $ctx")
-      super.channelActive(ctx)
+  // borrows heavily from the netty http2 example
+  class UpgradeRequestHandler extends ChannelDuplexHandler with BufferingChannelOutboundHandler {
+    override def channelRead(ctx: ChannelHandlerContext, msg: Any): Unit = {
+      // receives an upgrade response
+      // removes self from pipeline
+      // drops message
+      // Done with this handler, remove it from the pipeline.
+      msg match {
+        case settings: Http2Settings => // drop!
+          ctx.pipeline.remove(this)
+        case _ =>
+          ctx.fireChannelRead(msg)
+      }
     }
 
-    override def channelInactive(ctx: ChannelHandlerContext): Unit = {
-      log.info(s"$prefix.channelInactive $ctx")
-      super.channelInactive(ctx)
-    }
+    private[this] val first = new AtomicBoolean(true)
 
-    override def channelRead(ctx: ChannelHandlerContext, obj: Any): Unit = {
-      log.info(s"$prefix.channelRead $ctx $obj")
-      super.channelRead(ctx, obj)
-    }
+    /**
+     * We write the first message directly and it serves as the upgrade request.
+     * The rest of the handlers will mutate it to look like a good upgrade
+     * request.  We buffer the rest of the writes until we upgrade successfully.
+     */
+    override def write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise): Unit =
+      if (first.compareAndSet(true, false)) ctx.writeAndFlush(msg, promise)
+      else super.write(ctx, msg, promise) // this buffers the write until the handler is removed
+  }
 
-    override def channelReadComplete(ctx: ChannelHandlerContext): Unit = {
-      log.info(s"$prefix.channelReadComplete $ctx")
-      super.channelReadComplete(ctx)
-    }
-
-    override def write(ctx: ChannelHandlerContext, obj: Any, p: ChannelPromise): Unit = {
-      log.info(new Exception, s"$prefix.write $ctx $obj")
-      super.write(ctx, obj, p)
-    }
+  @ChannelHandler.Sharable
+  object IgnoreServerStreams extends SimpleChannelInboundHandler[Any]() {
+    def channelRead0(ctx: ChannelHandlerContext, obj: Any): Unit = {} // ignore
   }
 }

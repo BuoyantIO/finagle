@@ -88,7 +88,6 @@ private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[I
   }
 
   def read(): Future[Out] = {
-    log.info(s"ChannelTransport[$ch].read()")
     if (!ch.config.isAutoRead) {
       msgsNeeded.incrementAndGet()
       ch.read()
@@ -104,7 +103,6 @@ private[netty4] class ChannelTransport[In, Out](ch: Channel) extends Transport[I
     // listeners of two promises, which continue to share state via Linked and
     // is a gain in space-efficiency.
     p.become(queue.poll())
-    p.onSuccess(out => log.info(s"ChannelTransport[$ch].read(): $out"))
 
 
     // Note: We don't raise on queue.poll's future, because it doesn't set an

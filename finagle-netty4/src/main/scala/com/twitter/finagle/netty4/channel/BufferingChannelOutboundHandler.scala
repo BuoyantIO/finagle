@@ -22,7 +22,7 @@ import io.netty.channel._
  * pipeline if it's no longer needed.
  */
 private[finagle] trait BufferingChannelOutboundHandler extends ChannelOutboundHandler {
-  val log = com.twitter.logging.Logger.get()
+  val log = com.twitter.logging.Logger.get(getClass.getName)
 
   private[this] var pendingWrites: PendingWriteQueue = _
   private[this] var needFlush: Boolean = false
@@ -55,23 +55,23 @@ private[finagle] trait BufferingChannelOutboundHandler extends ChannelOutboundHa
   }
 
   override def write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise): Unit = {
-    log.info(s"buffering.write$ctx, $msg)")
+    log.info(s"buffering.write: $ctx, $msg)")
     getWriteQueue(ctx).add(msg, promise)
   }
 
   override def exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable): Unit = {
-    log.info(s"buffering.exceptionCaught($ctx, $cause)")
+    log.info(s"buffering.exceptionCaught: $ctx $cause")
     failPendingWrites(ctx, cause)
     ctx.fireExceptionCaught(cause)
   }
 
   override def flush(ctx: ChannelHandlerContext): Unit = {
-    log.info(s"buffering.flush($ctx)")
+    log.info(s"buffering.flush: $ctx")
     needFlush = true
   }
 
   override def handlerRemoved(ctx: ChannelHandlerContext): Unit = {
-    log.info(s"buffering.handlerRemoved($ctx)")
+    log.info(s"buffering.handlerRemoved: $ctx")
     writePendingWritesAndFlushIfNeeded(ctx)
   }
 }

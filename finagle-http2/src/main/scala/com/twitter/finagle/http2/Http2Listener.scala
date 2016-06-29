@@ -11,7 +11,7 @@ import io.netty.handler.codec.http2.{Http2Frame, Http2FrameLogger, Http2ServerDo
  * Please note that the listener cannot be used for TLS yet.
  */
 private[http2] object Http2Listener {
-  val log = com.twitter.logging.Logger.get()
+  private[this] val log = com.twitter.logging.Logger.get(getClass.getName)
 
   private[this] def mkHttp2(params: Stack.Params): ChannelInitializer[Channel] => ChannelHandler =
     (init: ChannelInitializer[Channel]) => new Http2ServerInitializer(init, params)
@@ -29,37 +29,4 @@ private[http2] object Http2Listener {
     params = params + Netty4Listener.BackPressure(false),
     handlerDecorator = mkHttp2(params)
   )
-
-  private[this] class DebugHandler(prefix: String) extends ChannelDuplexHandler {
-
-    override def channelActive(ctx: ChannelHandlerContext): Unit = {
-      log.info(s"$prefix.channelActive $ctx")
-      super.channelActive(ctx)
-    }
-
-    override def channelInactive(ctx: ChannelHandlerContext): Unit = {
-      log.info(s"$prefix.channelInactive $ctx")
-      super.channelInactive(ctx)
-    }
-
-    override def channelRead(ctx: ChannelHandlerContext, obj: Any): Unit = {
-      log.info(s"$prefix.channelRead $ctx $obj")
-      super.channelRead(ctx, obj)
-    }
-
-    override def channelReadComplete(ctx: ChannelHandlerContext): Unit = {
-      log.info(s"$prefix.channelReadComplete $ctx")
-      super.channelReadComplete(ctx)
-    }
-
-    override def write(ctx: ChannelHandlerContext, obj: Any, p: ChannelPromise): Unit = {
-      log.info(s"$prefix.write $ctx $obj")
-      super.write(ctx, obj, p)
-    }
-
-    override def close(ctx: ChannelHandlerContext, promise: ChannelPromise): Unit = {
-      log.info(s"$prefix.close $ctx")
-      super.close(ctx, promise)
-    }
-  }
 }
