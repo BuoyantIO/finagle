@@ -31,45 +31,39 @@ private[http2] object Http2Transporter {
   def setStreamId(msg: HttpMessage, id: Int): Unit =
     msg.headers.setInt(STREAM_ID.text, id)
 
-  // constructing an http2 cleartext transport
-  private[http2] def init(params: Stack.Params): ChannelPipeline => Unit =
-    { pipeline: ChannelPipeline =>
-      val maxResponseSize = params[httpparam.MaxResponseSize].size
-      // val maxChunkSize = params[httpparam.MaxChunkSize].size
-      // val maxHeaderSize = params[httpparam.MaxHeaderSize].size
-      // val maxInitialLineSize = params[httpparam.MaxInitialLineSize].size
-      // val http1 = new HttpClientCodec(
-      //   maxInitialLineSize.inBytes.toInt,
-      //   maxHeaderSize.inBytes.toInt,
-      //   maxChunkSize.inBytes.toInt
-      // )
-      // pipeline.addLast("h1", http1)
+  /**
+   * Constructs a pipeline that that is Http2Frame at the top and
+   * HttpObject at the bottom.
+   */
+  private[http2] def h2cToHttpPipeliner(params: Stack.Params): ChannelPipeline => Unit = {
+    val maxResponseSize = params[httpparam.MaxResponseSize].size.inBytes.toInt
 
-      // val h2mux = new Http2MultiplexCodec(false /*server*/, new IgnoreInboundHandler)
-      val h2conn = new DefaultHttp2Connection(false /*server*/)
-      val http2 = new HttpToHttp2ConnectionHandlerBuilder()
-        .connection(h2conn)
-        .initialSettings(new Http2Settings()
-          .pushEnabled(false))
-        .frameListener(new InboundHttp2ToHttpAdapterBuilder(h2conn)
-          .maxContentLength(maxResponseSize.inBytes.toInt)
+    (pipeline: ChannelPipeline) => {
+      pipeline.addLast("debug.h2", new DebugHandler("client[h2]"))
+
+      pipeline.addLast("h1ToH2", {
+        val conn = new DefaultHttp2Connection(false /*server*/)
+
+        val inbound = new InboundHttp2ToHttpAdapterBuilder(conn)
+          .maxContentLength(maxResponseSize)
           .propagateSettings(true)
-          .build())
-        .frameLogger(new Http2FrameLogger(LogLevel.ERROR, "tx.h2"))
-        .build()
+          .build()
 
-      pipeline.addLast("h1Debug", new DebugHandler("transporter[h1]"))
-      pipeline.addLast("h1ToH2", http2)
-      pipeline.addLast("h2Debug", new DebugHandler("transporter[h2]"))
+        new HttpToHttp2ConnectionHandlerBuilder()
+          .connection(conn)
+          // Since we don't expose Http2Frames, no use in trying to
+          // support PROMISE_PUSH.
+          .initialSettings(new Http2Settings().pushEnabled(false))
+          .frameListener(inbound)
+          .frameLogger(new Http2FrameLogger(LogLevel.ERROR, "client"))
+          .build()
+      })
 
-
-      // pipeline.addLast("h1ObjectToH2Frame",
-      //   new HttpClientUpgradeHandler(http1, new Http2ClientUpgradeCodec(http2), Int.MaxValue))
-      // pipeline.addLast("h2Upgrade", new UpgradeRequestHandler)
-      // initClient(params)(pipeline)
+      pipeline.addLast("debug.h1", new DebugHandler("client[h1]"))
 
       log.info(s"Http2Transporter.initClient: pipeline=${pipeline}")
     }
+  }
 
   private[this] val newTransport: Transport[Any, Any] => Transport[Any, Any] =
     { transport: Transport[Any, Any] =>
@@ -106,7 +100,7 @@ private[http2] object Http2Transporter {
       // netty-style backpressure
       // https://github.com/netty/netty/issues/3667#issue-69640214
       private[this] val underlying = Netty4Transporter[Any, Any](
-        init(params),
+        h2cToHttpPipeliner(params),
         params + Netty4Transporter.Backpressure(false)
       )
 
