@@ -9,9 +9,9 @@ import io.netty.channel.{Channel, ChannelInitializer}
 import io.netty.handler.codec.http.HttpServerUpgradeHandler.{UpgradeCodec, UpgradeCodecFactory}
 import io.netty.handler.codec.http.{HttpServerCodec, HttpServerUpgradeHandler}
 import io.netty.handler.codec.http2.{
+  Http2Codec,
   Http2CodecUtil,
   Http2FrameLogger,
-  Http2MultiplexCodec,
   Http2ServerUpgradeCodec
 }
 import io.netty.handler.logging.LogLevel
@@ -38,7 +38,7 @@ private[http2] class Http2ServerInitializer(
     // val upgrader = new HttpServerUpgradeHandler(sourceCodec, CodecUpgrade, maxRequestSize)
     // ch.pipeline.addLast(upgrader)
 
-    ch.pipeline.addLast(new Http2MultiplexCodec(true, channelInitializer))
+    ch.pipeline.addLast(new Http2Codec(true, channelInitializer))
     log.info(s"$prefix.initChannel(${ch}): ${ch.pipeline}")
   }
 

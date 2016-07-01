@@ -47,8 +47,8 @@ private[http2] object Http2Transporter {
       // received from the server.
       //pipeline.addLast("bufferH2UntilUpgraded", new UpgradeRequestHandler)
 
-      val h2mux = new Http2MultiplexCodec(false /*server*/, IgnoreServerStreams)
-      pipeline.addLast("h2.mux", h2mux)
+      // val h2mux = new Http2MultiplexCodec(false /*server*/, IgnoreServerStreams)
+      // pipeline.addLast("h2.mux", h2mux)
 
       // Translates outbound messages (requests written to the client)
       // from Http1 to Http2 and inbound messages (responses read from
