@@ -2,9 +2,10 @@ package com.twitter.finagle.factory
 
 import com.twitter.finagle._
 import com.twitter.finagle.loadbalancer.LoadBalancerFactory
+import com.twitter.finagle.loadbalancer.LoadBalancerFactory.AddrNeg
 import com.twitter.finagle.naming.NameInterpreter
 import com.twitter.finagle.param.{Label, Stats}
-import com.twitter.finagle.stats.{StatsReceiver, NullStatsReceiver}
+import com.twitter.finagle.stats.{NullStatsReceiver, StatsReceiver}
 import com.twitter.finagle.tracing.Trace
 import com.twitter.finagle.util.{Drv, Rng, Showable}
 import com.twitter.util._
@@ -176,13 +177,42 @@ private[finagle] object NameTreeFactory {
       def close(deadline: Time) = Future.Done
     }
 
+    case class Alt(
+      factories: Seq[ServiceFactory[Req, Rep]]
+    ) extends ServiceFactory[Req, Rep] {
+      def apply(conn: ClientConnection) = {
+        factories match {
+          case Nil => throw new IllegalArgumentException("Empty Alt NameTree")
+          case head +: tail => loop(head, tail, conn)
+        }
+      }
+
+      private[this] def loop(
+        head: ServiceFactory[Req, Rep],
+        tail: Seq[ServiceFactory[Req, Rep]],
+        conn: ClientConnection
+      ): Future[Service[Req, Rep]] = {
+        head.apply(conn).rescue {
+          case AddrNeg =>
+            tail.headOption match {
+              case Some(nextHead) =>
+                loop(nextHead, tail.tail, conn)
+              case None =>
+                Future.exception(AddrNeg)
+          }
+        }
+      }
+
+      override def status = Status.worstOf[ServiceFactory[Req, Rep]](factories, _.status)
+      def close(deadline: Time) = Future.Done
+    }
+
     def factoryOfTree(tree: NameTree[Key]): ServiceFactory[Req, Rep] =
       tree match {
         case NameTree.Neg | NameTree.Fail | NameTree.Empty => noBrokersAvailableFactory
         case NameTree.Leaf(key) => Leaf(key)
 
-        // it's an invariant of Namer.bind that it returns no Alts
-        case NameTree.Alt(_*) => Failed(new IllegalArgumentException("NameTreeFactory"))
+        case NameTree.Alt(trees@_*) => Alt(trees.map(factoryOfTree))
 
         case NameTree.Union(weightedTrees@_*) =>
           val (weights, trees) = weightedTrees.unzip { case NameTree.Weighted(w, t) => (w, t) }

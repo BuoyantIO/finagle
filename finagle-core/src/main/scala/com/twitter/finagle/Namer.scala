@@ -206,6 +206,40 @@ object Namer  {
     new Activity(stateVar)
   }
 
+  private[this] def bindAlt(
+    lookup: Path => Activity[NameTree[Name]],
+    depth: Int,
+    trees: Seq[NameTree[Name]],
+    weight: Option[Double]
+  ): Activity[NameTree[Name.Bound]] = {
+    val treeVars = trees.map { tree =>
+      bind(lookup, depth, weight)(tree).run
+    }
+
+    val stateVar = Var.collect(treeVars).map { seq =>
+
+      // - if there's at least one activity in Ok state, return the union of them
+      // - if all activities are pending, the union is pending.
+      // - if no subtree is Ok, and there are failures, retain the first failure.
+
+      val oks = seq.collect {
+        case Activity.Ok(t) => t
+      }
+      if (oks.isEmpty) {
+        seq.collectFirst {
+          case f@Activity.Failed(_) => f
+        }.getOrElse(Activity.Pending)
+      } else {
+        oks.filter(_ != NameTree.Neg) match {
+          case Nil => Activity.Ok(NameTree.Neg)
+          case Seq(t) => Activity.Ok(t.simplified)
+          case ts => Activity.Ok(Alt.fromSeq(oks).simplified)
+        }
+      }
+    }
+    new Activity(stateVar)
+  }
+
   // values of the returned activity are simplified and contain no Alt nodes
   private def bind(lookup: Path => Activity[NameTree[Name]], depth: Int, weight: Option[Double])(tree: NameTree[Name])
   : Activity[NameTree[Name.Bound]] =
@@ -235,18 +269,7 @@ object Namer  {
 
       case Alt() => Activity.value(Neg)
       case Alt(tree) => bind(lookup, depth, weight)(tree)
-      case Alt(trees@_*) =>
-        def loop(trees: Seq[NameTree[Name]]): Activity[NameTree[Name.Bound]] =
-          trees match {
-            case Nil => Activity.value(Neg)
-            case Seq(head, tail@_*) =>
-              bind(lookup, depth, weight)(head).flatMap {
-                case Fail => Activity.value(Fail)
-                case Neg => loop(tail)
-                case head => Activity.value(head)
-              }
-          }
-        loop(trees)
+      case Alt(trees@_*) => bindAlt(lookup, depth, trees, weight)
     }
 }
 

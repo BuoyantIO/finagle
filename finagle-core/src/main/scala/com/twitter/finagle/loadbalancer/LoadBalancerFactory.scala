@@ -4,9 +4,11 @@ import com.twitter.app.GlobalFlag
 import com.twitter.finagle._
 import com.twitter.finagle.client.Transporter
 import com.twitter.finagle.factory.TrafficDistributor
+import com.twitter.finagle.service.FailingFactory
 import com.twitter.finagle.stats._
 import com.twitter.util.{Activity, Future, Time, Var}
 import java.util.logging.{Level, Logger}
+import scala.util.control.NoStackTrace
 
 object perHostStats extends GlobalFlag(false, "enable/default per-host stats.\n" +
   "\tWhen enabled,the configured stats receiver will be used,\n" +
@@ -89,6 +91,8 @@ object LoadBalancerFactory {
     implicit val param = Stack.Param(Param(DefaultBalancerFactory))
   }
 
+  object AddrNeg extends Throwable with NoStackTrace
+
   /**
    * Creates a [[com.twitter.finagle.Stackable]] [[com.twitter.finagle.loadbalancer.LoadBalancerFactory]].
    * The module creates a new `ServiceFactory` based on the module above it for each `Addr`
@@ -136,6 +140,11 @@ object LoadBalancerFactory {
       // client stack, `next` represents the endpoint stack which will result
       // in a connection being established when materialized.
       def newEndpoint(addr: Address): ServiceFactory[Req, Rep] = {
+
+        if (addr == Address.Failed(AddrNeg)) {
+          return new FailingFactory[Req, Rep](AddrNeg)
+        }
+
         val stats = if (hostStatsReceiver.isNull) statsReceiver else {
           val scope = addr match {
             case Address.Inet(ia, _) =>
@@ -199,7 +208,7 @@ object LoadBalancerFactory {
           Activity.Ok(set)
         case Addr.Neg =>
           log.info(s"$label: name resolution is negative (local dtab: ${Dtab.local})")
-          Activity.Ok(Set.empty)
+          Activity.Ok(Set(Address.Failed(AddrNeg)))
         case Addr.Failed(e) =>
           log.log(Level.INFO, s"$label: name resolution failed  (local dtab: ${Dtab.local})", e)
           Activity.Failed(e)
