@@ -75,7 +75,8 @@ class ServiceFactoryCache[Key, Req, Rep](
   timer: Timer,
   statsReceiver: StatsReceiver = NullStatsReceiver,
   maxCacheSize: Int = 8,
-  tti: Duration = 10.minutes
+  tti: Duration = 10.minutes,
+  minCacheSize: Int = 1
 ) extends Closable {
   assert(maxCacheSize > 0)
 
@@ -97,8 +98,9 @@ class ServiceFactoryCache[Key, Req, Rep](
     try {
       val expired = cache.asScala.filter { case (_, fac) => fac.idleFor > tti }
       if (expired.nonEmpty) {
-        val evictees = if (expired.size == cache.size) {
-          expired - expired.minBy { case (_, fac) => fac.idleFor }._1
+        val evictees = if (cache.size - expired.size < minCacheSize) {
+          val numToEvict = cache.size - minCacheSize
+          expired.toSeq.sortBy { case (_, fac) => fac.idleFor }.takeRight(numToEvict)
         } else {
           expired
         }

@@ -135,6 +135,72 @@ class ServiceFactoryCacheTest extends FunSuite with MockitoSugar {
     }
   })
 
+  test("larger minCacheSize")(Time.withCurrentTimeFrozen { tc =>
+    new Ctx {
+      val newFactory: Int => ServiceFactory[String, String] = { i =>
+        SF(i)
+      }
+      val tti = 1.minute
+      val timer = new MockTimer
+      val cache =
+        new ServiceFactoryCache[Int, String, String](newFactory, timer, minCacheSize = 3, tti = tti)
+
+      assert(factories.isEmpty)
+
+      var s1 = Await.result(cache(1, ClientConnection.nil), 1.second)
+      var s2 = Await.result(cache(2, ClientConnection.nil), 1.second)
+      var s3 = Await.result(cache(3, ClientConnection.nil), 1.second)
+      var s4 = Await.result(cache(4, ClientConnection.nil), 1.second)
+      var s5 = Await.result(cache(5, ClientConnection.nil), 1.second)
+      s1.close(); tc.advance(1.millis)
+      s2.close(); tc.advance(1.millis)
+      s3.close(); tc.advance(1.millis)
+      s4.close(); tc.advance(1.millis)
+      s5.close(); tc.advance(1.millis)
+
+      assert(factories == Map(1 -> 0, 2 -> 0, 3 -> 0, 4 -> 0, 5 -> 0))
+
+      tc.advance(tti)
+      timer.tick()
+
+      // Avoid expiring least 3 idle entries.
+      assert(factories == Map(3 -> 0, 4 -> 0, 5 -> 0))
+    }
+  })
+
+    test("zero minCacheSize")(Time.withCurrentTimeFrozen { tc =>
+    new Ctx {
+      val newFactory: Int => ServiceFactory[String, String] = { i =>
+        SF(i)
+      }
+      val tti = 1.minute
+      val timer = new MockTimer
+      val cache =
+        new ServiceFactoryCache[Int, String, String](newFactory, timer, minCacheSize = 0, tti = tti)
+
+      assert(factories.isEmpty)
+
+      var s1 = Await.result(cache(1, ClientConnection.nil), 1.second)
+      var s2 = Await.result(cache(2, ClientConnection.nil), 1.second)
+      var s3 = Await.result(cache(3, ClientConnection.nil), 1.second)
+      var s4 = Await.result(cache(4, ClientConnection.nil), 1.second)
+      var s5 = Await.result(cache(5, ClientConnection.nil), 1.second)
+      s1.close(); tc.advance(1.millis)
+      s2.close(); tc.advance(1.millis)
+      s3.close(); tc.advance(1.millis)
+      s4.close(); tc.advance(1.millis)
+      s5.close(); tc.advance(1.millis)
+
+      assert(factories == Map(1 -> 0, 2 -> 0, 3 -> 0, 4 -> 0, 5 -> 0))
+
+      tc.advance(tti * 2)
+      timer.tick()
+
+      // All entries are expired.
+      assert(factories == Map.empty)
+    }
+  })
+
   test("close")(Time.withCurrentTimeFrozen { tc =>
     new Ctx {
       val newFactory: Int => ServiceFactory[String, String] = { i =>
